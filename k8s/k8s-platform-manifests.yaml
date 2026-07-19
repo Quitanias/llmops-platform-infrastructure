@@ -1,0 +1,195 @@
+# ==============================================================================
+# 1. NAMESPACE: Isolamento lógico do ecossistema do Agente
+# ==============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: llmops-platform
+  labels:
+    tier: ai-agents
+    security: private
+
+---
+# ==============================================================================
+# 2. CONFIGMAP & SECRET: Variáveis de Ambiente e Conexão de Banco de Dados
+# ==============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-config
+  namespace: llmops-platform
+data:
+  ENVIRONMENT: "production"
+  AWS_DEFAULT_REGION: "us-east-1"
+  DB_NAME: "sre_vector_manual"
+  DB_USER: "db_admin"
+  PORT: "8000"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: agent-secrets
+  namespace: llmops-platform
+type: Opaque
+data:
+  # Base64 para: SRE_Super_Secure_Pass_2026! (O Terraform provisionou esta senha)
+  DB_PASSWORD: U1JFX1N1cGVyX1NlY3VyZV9QYXNzXzIwMjYh
+  # Em produção AWS (EKS), a API Key do Groq seria omitida se usássemos Bedrock via IAM Roles IRSA.
+  # Deixamos o placeholder caso decida manter a Groq temporariamente.
+  GROQ_API_KEY: c3VhX2NoYXZlX3JlYWxfZ3Nr
+
+---
+# ==============================================================================
+# 3. DEPLOYMENT: O Core da Infraestrutura (Engineers/SRE Architecture)
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: internal-sre-agent
+  namespace: llmops-platform
+  labels:
+    app: internal-sre-agent
+spec:
+  replicas: 2 # Alta Disponibilidade de partida
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1       # Sobe 1 pod novo antes de derrubar o antigo
+      maxUnavailable: 0 # Nunca derruba pods antigos antes do novo estar 100% Saudável
+  selector:
+    matchLabels:
+      app: internal-sre-agent
+  template:
+    metadata:
+      labels:
+        app: internal-sre-agent
+    spec:
+      # BOAS PRÁTICAS DE IA: Garante que os containers não rodem na mesma máquina física se houver falha de hardware
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            topologyKey: "kubernetes.io/hostname"
+            labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - internal-sre-agent
+      containers:
+      - name: api-agent-container
+        image: sua-conta-ecr.dkr.ecr.us-east-1.amazonaws.com/llmops-rag-api:latest
+        
+        # BOAS PRÁTICAS PARA IMAGENS GRANDES (ML/Python Workloads):
+        # Se a imagem tiver gigabytes devido às dependências de Data Science, o cluster não deve
+        # baixar a imagem de rede a cada restart interno se ela já estiver armazenada no Node físico.
+        imagePullPolicy: IfNotPresent
+
+        ports:
+        - containerPort: 8000
+          name: http-api
+
+        resources:
+          requests:
+            cpu: "500m"     # 0.5 Core garantido
+            memory: "1Gi"   # 1 GB RAM garantido
+          limits:
+            cpu: "2000m"    # Permite bursts de processamento para tokenização
+            memory: "2Gi"   # Evita erros de OOM (Out Of Memory) no processamento vetorial
+
+        envFrom:
+        - configMapRef:
+            name: agent-config
+        env:
+        - name: DB_HOST
+          value: "llmops-internal-agent-vector-db.c123456789.us-east-1.rds.amazonaws.com" # Substituir pelo output do Terraform
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: agent-secrets
+              key: DB_PASSWORD
+        - name: GROQ_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agent-secrets
+              key: GROQ_API_KEY
+
+        # ==============================================================================
+        # PROBES: Tratamento de COLD START na inicialização do Modelo de IA
+        # ==============================================================================
+        # 1. Startup Probe: Dá tempo ao container para baixar pesos de modelos ou inicializar
+        # bibliotecas pesadas de embeddings sem que o K8s reinicie o container por achar que ele travou.
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          failureThreshold: 30 # Tenta 30 vezes
+          periodSeconds: 10    # A cada 10 segundos (Máximo de 5 minutos de tolerância para o Cold Start)
+
+        # 2. Liveness Probe: Checa se a API travou em um loop ou deadlock interno em tempo de execução.
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        # 3. Readiness Probe: O Load Balancer só envia tráfego se o banco vetorial e as conexões de rede estiverem prontas.
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+
+---
+# ==============================================================================
+# 4. SERVICE: Abstração de Rede Interna e Load Balancing
+# ==============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: internal-sre-agent-service
+  namespace: llmops-platform
+  annotations:
+    # Vincula o Service diretamente com o Application Load Balancer (ALB) da AWS via AWS Load Balancer Controller
+    service.beta.kubernetes.io/aws-load-balancer-type: "external"
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 80
+    targetPort: 8000
+    protocol: TCP
+    name: http
+  selector:
+    app: internal-sre-agent
+
+---
+# ==============================================================================
+# 5. HPA: Auto-scaling Inteligente
+# ==============================================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: internal-sre-agent-hpa
+  namespace: llmops-platform
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: internal-sre-agent
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  # Em APIs de IA, o processamento de concorrência de rede e memória (RAG local) é o gargalo.
+  # Escalamos assim que o consumo médio de memória atingir 80% do provisionado.
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
