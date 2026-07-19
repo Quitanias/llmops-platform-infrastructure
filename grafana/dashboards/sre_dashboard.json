@@ -99,7 +99,7 @@
           "refId": "A"
         }
       ],
-      "title": "FastAPI Pod CPU Usage (Anomalia Mockada)",
+      "title": "FastAPI Pod CPU Usage",
       "type": "timeseries"
     },
     {

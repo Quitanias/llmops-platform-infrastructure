@@ -135,6 +135,43 @@ def query_loki_logs(query: str, limit: int = 50) -> str:
         })
     return json.dumps({"status": "success", "logs": []})
 
+def query_git_history(service_name: str, limit: int = 5) -> str:
+    """Tool: Simulates fetching recent Git commits and CI/CD deployments."""
+    logger.info(f"[Tool Called] Querying Git History for: {service_name} (limit {limit})")
+    if "fastapi" in service_name.lower() or "main.py" in service_name.lower() or "postgres" in service_name.lower():
+        return json.dumps({
+            "status": "success",
+            "recent_commits": [
+                {"commit": "a1b2c3d", "author": "devops-team", "message": "fix: update asyncpg connection pool initialization with no max limit"},
+                {"commit": "e5f6g7h", "author": "dev-team", "message": "feat: integrate AWS Bedrock client for Claude 3.5"},
+                {"commit": "i9j0k1l", "author": "sre-bot", "message": "chore: bump prometheus-client to 0.25.0"}
+            ],
+            "recent_deployments": [
+                {"deploy_id": "deploy-992", "status": "SUCCESS", "timestamp": "20 minutes ago"}
+            ],
+            "summary": "A deployment occurred 20 minutes ago. The latest commit modified the asyncpg connection pool initialization."
+        })
+    return json.dumps({"status": "success", "recent_commits": [], "summary": "No recent changes found."})
+
+def query_aws_health(service: str, region: str) -> str:
+    """Tool: Simulates querying the AWS Health Dashboard for global outages."""
+    logger.info(f"[Tool Called] Querying AWS Health for {service} in {region}")
+    if "bedrock" in service.lower() or "claude" in service.lower() or "health" in service.lower():
+        return json.dumps({
+            "status": "success",
+            "events": [
+                {
+                    "event_id": "AWS-BEDROCK-OUTAGE-123",
+                    "service": "Amazon Bedrock",
+                    "region": "us-east-1",
+                    "status": "Open",
+                    "description": "We are investigating increased API error rates and timeouts for Amazon Bedrock Claude models in the US-EAST-1 region."
+                }
+            ],
+            "summary": "Active global outage reported for Amazon Bedrock in us-east-1."
+        })
+    return json.dumps({"status": "success", "events": [], "summary": "No operational issues reported by AWS."})
+
 # Mapping for the Agent Execution Engine
 async def execute_tool(name: str, arguments: dict) -> str:
     if name == "search_sre_manual":
@@ -144,6 +181,10 @@ async def execute_tool(name: str, arguments: dict) -> str:
         return query_prometheus_metrics(arguments.get("query", ""), arguments.get("time_range", "10m"))
     elif name == "query_loki_logs":
         return query_loki_logs(arguments.get("query", ""), arguments.get("limit", 50))
+    elif name == "query_git_history":
+        return query_git_history(arguments.get("service_name", ""), arguments.get("limit", 5))
+    elif name == "query_aws_health":
+        return query_aws_health(arguments.get("service", ""), arguments.get("region", "us-east-1"))
     else:
         return f"Tool {name} not found."
 
@@ -191,6 +232,36 @@ tools_schema = [
                 "required": ["query"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_git_history",
+            "description": "Fetch recent GitHub commits and CI/CD deployment history for a specific repository or service.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service_name": {"type": "string", "description": "The service name or repo file (e.g. 'fastapi' or 'main.py')."},
+                    "limit": {"type": "integer", "description": "Maximum number of commits to fetch."}
+                },
+                "required": ["service_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_aws_health",
+            "description": "Query the AWS Health Dashboard for global service outages or regional instabilities.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string", "description": "The AWS service name (e.g. 'bedrock', 'rds')."},
+                    "region": {"type": "string", "description": "The AWS region (e.g. 'us-east-1')."}
+                },
+                "required": ["service", "region"]
+            }
+        }
     }
 ]
 
@@ -230,11 +301,12 @@ async def process_question(request: QuestionRequest):
                     "You are a Virtual Site Reliability Engineer (SRE) and an advanced AIOps Agent. "
                     "Your goal is to diagnose incidents using observability tools and suggest mitigations based on the internal runbook.\n"
                     "STEPS:\n"
-                    "1. When asked about slowness or errors, ALWAYS query Prometheus metrics (using 'query_prometheus_metrics') and application logs (using 'query_loki_logs') first.\n"
-                    "2. Analyze if there were CPU/Memory spikes, pod evictions, HPA scale events, or slowness during the startupProbe.\n"
-                    "3. You MUST use the tool 'search_sre_manual' to check if there is a documented runbook for the error.\n"
-                    "4. You MUST respond in the exact same language as the user's question (e.g., if the question is in English, respond in English; if in Portuguese, respond in Portuguese).\n"
-                    "5. Depending on the detected language, you MUST strictly use the corresponding format:\n"
+                    "1. When diagnosing an incident, you have a variety of tools. ALWAYS query Prometheus metrics ('query_prometheus_metrics') and application logs ('query_loki_logs').\n"
+                    "2. If the user mentions connection limits, deployment bugs, or recent changes, use 'query_git_history' to correlate the error with recent GitHub commits.\n"
+                    "3. If the user mentions external API failures or timeouts (like Bedrock or AWS), use 'query_aws_health' to check for AWS outages.\n"
+                    "4. You MUST use the tool 'search_sre_manual' to check if there is a documented runbook for the error.\n"
+                    "5. You MUST respond in the exact same language as the user's question (e.g., if the question is in English, respond in English; if in Portuguese, respond in Portuguese).\n"
+                    "6. Depending on the detected language, you MUST strictly use the corresponding format:\n"
                     "   - If responding in English: 'I noticed in chart X that your metric was like this, associated it with logs Y, and found a documentation about this in our database. Joining all the information, the diagnosis is this: [diagnosis], and to resolve it we need [solution]. Can I apply the correction for you or do you wish to do it manually?'\n"
                     "   - If responding in Portuguese: 'Notei no gráfico X que a sua métrica estava dessa forma, associei com os logs Y e achei uma documentação sobre isso no nosso banco de dados. Unindo todas as informações, o diagnóstico é esse: [diagnostico], e para resolver precisamos de [solucao]. Posso aplicar a correção para você ou deseja fazer manualmente?'\n\n"
                     "CRITICAL: When calling tools, you MUST use valid JSON arguments. Do not mix languages (e.g., if the user asked in English, do not output any Portuguese text in your response)."

@@ -30,14 +30,17 @@ down:
 	docker compose down
 
 seed:
-	@echo -e "${YELLOW}Waiting for the API to initialize to inject the SRE manual (10 seconds)...${NC}"
+	@echo -e "${YELLOW}Waiting for the API to initialize to inject the SRE manuals (10 seconds)...${NC}"
 	@sleep 10
 	@echo -e "${CYAN}Feeding the Knowledge Base (Vector DB)...${NC}"
-	@curl -s -X POST "http://localhost:8000/upload_document" \
-		-H "accept: application/json" \
-		-H "Content-Type: multipart/form-data" \
-		-F "file=@mock_runbook.txt" > /dev/null
-	@echo -e "${GREEN}SRE Manual (mock_runbook.txt) successfully injected into the AI memory!${NC}"
+	@for file in docs/*.md; do \
+		echo -e "${CYAN}Ingesting $$file...${NC}"; \
+		curl -s -X POST "http://localhost:8000/upload_document" \
+			-H "accept: application/json" \
+			-H "Content-Type: multipart/form-data" \
+			-F "file=@$$file" > /dev/null; \
+	done
+	@echo -e "${GREEN}All SRE Manuals successfully injected into the AI memory!${NC}"
 
 open-ui:
 	@echo -e "${CYAN}===================================================${NC}"

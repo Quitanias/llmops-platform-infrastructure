@@ -7,7 +7,7 @@ os.environ["GROQ_API_KEY"] = "mock-groq-key-gsk-12345"
 os.environ["DB_HOST"] = "localhost"
 os.environ["DB_PASSWORD"] = "mock-password"
 
-from main import app
+from app.main import app
 
 client = TestClient(app)
 
@@ -37,3 +37,23 @@ def test_ask_endpoint_invalid_json():
     """
     response = client.post("/ask", data="corrupted string format")
     assert response.status_code == 422
+
+def test_query_git_history_mock():
+    """Test the Git history simulation tool"""
+    from app.main import query_git_history
+    import json
+    
+    res = json.loads(query_git_history("fastapi"))
+    assert res["status"] == "success"
+    assert len(res["recent_commits"]) == 3
+    assert res["recent_commits"][0]["author"] == "devops-team"
+
+def test_query_aws_health_mock():
+    """Test the AWS Health simulation tool"""
+    from app.main import query_aws_health
+    import json
+    
+    res = json.loads(query_aws_health("bedrock", "us-east-1"))
+    assert res["status"] == "success"
+    assert len(res["events"]) == 1
+    assert res["events"][0]["event_id"] == "AWS-BEDROCK-OUTAGE-123"
