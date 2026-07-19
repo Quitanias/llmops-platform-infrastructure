@@ -16,6 +16,38 @@ The agent diagnoses infrastructure anomalies dynamically by executing tools to i
    - **Grafana**: Visualizes the incident with pre-configured dashboards.
 4. **Mock Generator**: A background service (`mock_generator.py`) that continuously simulates a production crisis (OOMKilled events and CPU spikes) to feed Grafana and Loki.
 
+### Architecture Diagram
+
+```mermaid
+graph TD
+    User([👨‍💻 SRE Engineer]) -->|Asks Question| API(FastAPI: AIOps Agent)
+    
+    subgraph Core AI
+        API -->|1. LLM Reasoning| Groq(Groq: Llama 3.3)
+        API -->|2. Generate Embeddings| ST[SentenceTransformers]
+    end
+    
+    subgraph Observability
+        API -->|Query Metrics| Prom(Prometheus)
+        API -->|Query Logs| Loki(Loki)
+        Prom --- Grafana(Grafana)
+        Loki --- Grafana
+    end
+    
+    subgraph Knowledge Base
+        ST -->|Vector Search| PG[(PostgreSQL + pgvector)]
+        Docs[docs/*.md] -->|make seed| PG
+    end
+    
+    subgraph External Mocks
+        API -->|Check Commits| Git[GitHub / CI-CD]
+        API -->|Check Outages| AWS[AWS Health Dashboard]
+    end
+    
+    Mock(Mock Generator) -->|Pushes Spikes| Prom
+    Mock -->|Pushes Errors| Loki
+```
+
 ---
 
 ## ⚡ Quick Start: Running the Simulation
