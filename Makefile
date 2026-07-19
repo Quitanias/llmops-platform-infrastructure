@@ -30,8 +30,13 @@ down:
 	docker compose down
 
 seed:
-	@echo -e "${YELLOW}Waiting for the API to initialize to inject the SRE manuals (10 seconds)...${NC}"
-	@sleep 10
+	@echo -e "${YELLOW}Waiting for the API to initialize (Downloading AI Models can take up to 2 mins)...${NC}"
+	@for i in $$(seq 1 30); do \
+		if curl -s http://localhost:8000/docs > /dev/null; then \
+			break; \
+		fi; \
+		sleep 5; \
+	done
 	@echo -e "${CYAN}Feeding the Knowledge Base (Vector DB)...${NC}"
 	@for file in docs/*.md; do \
 		echo -e "${CYAN}Ingesting $$file...${NC}"; \
